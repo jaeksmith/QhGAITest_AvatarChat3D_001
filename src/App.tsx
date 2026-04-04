@@ -19,7 +19,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     rate: 1.0,
     pitch: 1.0,
   },
-  avatarPath: '/models/avatar.vrm',
+  avatarPath: '/models/avatar_fbx/Meshy_AI_Hot_young_muscular_bi_biped/Meshy_AI_Hot_young_muscular_bi_biped_Character_output.fbx',
   systemPrompt: 'You are a friendly AI assistant with a 3D avatar. Be expressive and conversational.',
 };
 

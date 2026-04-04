@@ -2,6 +2,7 @@ import { useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from 
 import * as THREE from 'three';
 import { VRMLoaderPlugin, VRM, VRMExpressionPresetName } from '@pixiv/three-vrm';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { Expression } from '../types';
 
@@ -26,10 +27,111 @@ const EXPRESSION_MAP: Record<Expression, VRMExpressionPresetName> = {
   relaxed: VRMExpressionPresetName.Relaxed,
 };
 
+/**
+ * Detect format from URL/path
+ */
+function getAvatarFormat(url: string): 'vrm' | 'fbx' | 'glb' {
+  const lower = url.toLowerCase();
+  if (lower.endsWith('.fbx')) return 'fbx';
+  if (lower.endsWith('.glb') || lower.endsWith('.gltf')) return 'glb';
+  return 'vrm';
+}
+
+/**
+ * Enhance FBX materials with PBR textures from alongside the FBX file.
+ * Preserves existing FBX materials/mesh structure to avoid body-through-clothes artifacts.
+ */
+function enhanceFBXMaterials(model: THREE.Group, basePath: string, baseName: string) {
+  const textureLoader = new THREE.TextureLoader();
+
+  const diffusePath = `${basePath}/${baseName}_texture_0.png`;
+  const normalPath = `${basePath}/${baseName}_texture_0_normal.png`;
+  const roughnessPath = `${basePath}/${baseName}_texture_0_roughness.png`;
+  const metallicPath = `${basePath}/${baseName}_texture_0_metallic.png`;
+
+  // Log mesh structure for debugging
+  model.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh) {
+      const mesh = child as THREE.Mesh;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      console.log(`Mesh: "${mesh.name}" | Materials: ${mats.map((m) => `${m.name || '(unnamed)'} [${m.type}]`).join(', ')}`);
+    }
+  });
+
+  // Load PBR textures
+  const diffuseMap = textureLoader.load(diffusePath);
+  diffuseMap.colorSpace = THREE.SRGBColorSpace;
+  const normalMap = textureLoader.load(normalPath);
+  const roughnessMap = textureLoader.load(roughnessPath);
+  const metallicMap = textureLoader.load(metallicPath);
+
+  model.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh) {
+      const mesh = child as THREE.Mesh;
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+
+      const enhanced = materials.map((mat) => {
+        // Convert Phong/Lambert to Standard for PBR support
+        const stdMat = new THREE.MeshStandardMaterial();
+
+        // Carry over existing properties
+        if ('color' in mat) stdMat.color.copy((mat as THREE.MeshPhongMaterial).color);
+        if ('opacity' in mat) stdMat.opacity = mat.opacity;
+        if ('transparent' in mat) stdMat.transparent = mat.transparent;
+        if ('alphaTest' in mat) stdMat.alphaTest = mat.alphaTest;
+        stdMat.name = mat.name;
+
+        // Preserve existing diffuse map or apply ours
+        const existingMap = (mat as THREE.MeshPhongMaterial).map;
+        stdMat.map = existingMap || diffuseMap;
+        if (stdMat.map) stdMat.map.colorSpace = THREE.SRGBColorSpace;
+
+        // Add PBR maps
+        stdMat.normalMap = normalMap;
+        stdMat.roughnessMap = roughnessMap;
+        stdMat.metalnessMap = metallicMap;
+        stdMat.roughness = 1.0;
+        stdMat.metalness = 1.0;
+
+        // Use FrontSide to prevent back-face bleed-through
+        stdMat.side = THREE.FrontSide;
+
+        return stdMat;
+      });
+
+      mesh.material = enhanced.length === 1 ? enhanced[0] : enhanced;
+    }
+  });
+}
+
+/**
+ * Find jaw/mouth bone in skeleton for lip sync
+ */
+function findMouthBone(model: THREE.Group): THREE.Bone | null {
+  let mouthBone: THREE.Bone | null = null;
+  const mouthNames = ['jaw', 'mouth', 'chin', 'head_jaw', 'jaw_open', 'lower_jaw'];
+
+  model.traverse((child) => {
+    if ((child as THREE.Bone).isBone && !mouthBone) {
+      const name = child.name.toLowerCase();
+      if (mouthNames.some((n) => name.includes(n))) {
+        mouthBone = child as THREE.Bone;
+      }
+    }
+  });
+
+  return mouthBone;
+}
+
 const AvatarScene = forwardRef<AvatarSceneHandle, AvatarSceneProps>(
   ({ avatarUrl, onLoaded, onError }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const vrmRef = useRef<VRM | null>(null);
+    const fbxModelRef = useRef<THREE.Group | null>(null);
+    const fbxMixerRef = useRef<THREE.AnimationMixer | null>(null);
+    const fbxActionsRef = useRef<Map<string, THREE.AnimationAction>>(new Map());
+    const fbxMouthBoneRef = useRef<THREE.Bone | null>(null);
+    const fbxMouthRestQuat = useRef<THREE.Quaternion>(new THREE.Quaternion());
     const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
     const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -71,7 +173,7 @@ const AvatarScene = forwardRef<AvatarSceneHandle, AvatarSceneProps>(
       scene.background = new THREE.Color(0x1a1a2e);
       sceneRef.current = scene;
 
-      // Camera - pulled back for full body view
+      // Camera
       const camera = new THREE.PerspectiveCamera(20, width / height, 0.1, 100);
       camera.position.set(0, 1.2, 3.5);
       cameraRef.current = camera;
@@ -109,58 +211,155 @@ const AvatarScene = forwardRef<AvatarSceneHandle, AvatarSceneProps>(
       const gridHelper = new THREE.GridHelper(10, 10, 0x444466, 0x333355);
       scene.add(gridHelper);
 
-      // Load VRM
-      const loader = new GLTFLoader();
-      loader.register((parser) => new VRMLoaderPlugin(parser));
+      const format = getAvatarFormat(avatarUrl);
 
-      loader.load(
-        avatarUrl,
-        (gltf) => {
-          const vrm = gltf.userData.vrm as VRM;
-          if (!vrm) {
-            onErrorRef.current?.('Failed to parse VRM from file');
-            return;
+      // Frame camera on a loaded model
+      const frameCamera = (object: THREE.Object3D) => {
+        const box = new THREE.Box3().setFromObject(object);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const distance = Math.max(size.y * 2.5, 2.5);
+        camera.position.set(0, center.y, distance);
+        controls.target.set(0, center.y, 0);
+        controls.update();
+      };
+
+      if (format === 'fbx') {
+        // ──── FBX Loading ────
+        const fbxLoader = new FBXLoader();
+        fbxLoader.load(
+          avatarUrl,
+          (fbxModel) => {
+            // FBX models from Meshy are often in cm scale (100x too large)
+            const box = new THREE.Box3().setFromObject(fbxModel);
+            const height = box.getSize(new THREE.Vector3()).y;
+            if (height > 10) {
+              const scale = 1.7 / height; // normalize to ~1.7m tall
+              fbxModel.scale.setScalar(scale);
+            }
+
+            scene.add(fbxModel);
+            fbxModelRef.current = fbxModel;
+
+            // Apply PBR textures
+            const urlParts = avatarUrl.split('/');
+            urlParts.pop(); // remove filename
+            const basePath = urlParts.join('/');
+            // Derive base name from the directory
+            const dirName = urlParts[urlParts.length - 1] || '';
+            const baseName = dirName || 'avatar';
+            enhanceFBXMaterials(fbxModel, basePath, baseName);
+
+            // Find mouth/jaw bone for lip sync
+            const mouthBone = findMouthBone(fbxModel);
+            if (mouthBone) {
+              fbxMouthBoneRef.current = mouthBone;
+              fbxMouthRestQuat.current.copy(mouthBone.quaternion);
+            }
+
+            // Set up animation mixer
+            const mixer = new THREE.AnimationMixer(fbxModel);
+            fbxMixerRef.current = mixer;
+
+            // Load embedded animations if any
+            if (fbxModel.animations.length > 0) {
+              fbxModel.animations.forEach((clip, i) => {
+                const name = clip.name || `anim_${i}`;
+                const action = mixer.clipAction(clip);
+                fbxActionsRef.current.set(name, action);
+                console.log(`Found animation: ${name} (${clip.duration.toFixed(1)}s)`);
+              });
+              // Play idle/first animation
+              const idleAction =
+                fbxActionsRef.current.get('idle') ||
+                fbxActionsRef.current.get('Idle') ||
+                fbxActionsRef.current.values().next().value;
+              if (idleAction) {
+                idleAction.play();
+              }
+            }
+
+            // Also try loading the separate animations FBX
+            const animUrl = avatarUrl.replace('_Character_output.fbx', '_Meshy_AI_Meshy_Merged_Animations.fbx');
+            if (animUrl !== avatarUrl) {
+              const animLoader = new FBXLoader();
+              animLoader.load(
+                animUrl,
+                (animFbx) => {
+                  console.log(`Loaded ${animFbx.animations.length} animations from separate file`);
+                  animFbx.animations.forEach((clip, i) => {
+                    const name = clip.name || `ext_anim_${i}`;
+                    const action = mixer.clipAction(clip);
+                    fbxActionsRef.current.set(name, action);
+                    console.log(`  Animation: ${name} (${clip.duration.toFixed(1)}s)`);
+                  });
+
+                  // If no animation is playing yet, play the first one
+                  if (fbxModel.animations.length === 0) {
+                    const firstAction = fbxActionsRef.current.values().next().value;
+                    if (firstAction) {
+                      firstAction.play();
+                    }
+                  }
+                },
+                undefined,
+                (err) => {
+                  console.log('No separate animations file found (optional):', err);
+                }
+              );
+            }
+
+            frameCamera(fbxModel);
+            onLoadedRef.current?.();
+          },
+          undefined,
+          (error) => {
+            console.error('Error loading FBX:', error);
+            onErrorRef.current?.(`Failed to load FBX avatar: ${error}`);
           }
+        );
+      } else {
+        // ──── VRM / GLB Loading ────
+        const loader = new GLTFLoader();
+        loader.register((parser) => new VRMLoaderPlugin(parser));
 
-          scene.add(vrm.scene);
-          vrmRef.current = vrm;
+        loader.load(
+          avatarUrl,
+          (gltf) => {
+            const vrm = gltf.userData.vrm as VRM;
+            if (!vrm) {
+              onErrorRef.current?.('Failed to parse VRM from file');
+              return;
+            }
 
-          // Auto-frame: compute bounding box and position camera
-          const box = new THREE.Box3().setFromObject(vrm.scene);
-          const center = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3());
+            scene.add(vrm.scene);
+            vrmRef.current = vrm;
+            frameCamera(vrm.scene);
+            onLoadedRef.current?.();
+          },
+          undefined,
+          (error) => {
+            console.error('Error loading VRM:', error);
+            onErrorRef.current?.(`Failed to load avatar: ${error}`);
+          }
+        );
+      }
 
-          // Position camera to see full body with some margin
-          const distance = Math.max(size.y * 2.5, 2.5);
-          camera.position.set(0, center.y, distance);
-          controls.target.set(0, center.y, 0);
-          controls.update();
-
-          onLoadedRef.current?.();
-        },
-        undefined,
-        (error) => {
-          console.error('Error loading VRM:', error);
-          onErrorRef.current?.(`Failed to load avatar: ${error}`);
-        }
-      );
-
-      // Animation loop
+      // ──── Animation Loop ────
       const animate = () => {
         animFrameRef.current = requestAnimationFrame(animate);
         const delta = clockRef.current.getDelta();
 
+        // VRM update
         if (vrmRef.current) {
           const vrm = vrmRef.current;
           const expressionManager = vrm.expressionManager;
 
           if (expressionManager) {
-            // Smoothly transition expressions
             const target = targetExpressionRef.current;
             const current = currentExpressionRef.current;
 
             if (target !== current) {
-              // Fade out current expression
               const currentValue =
                 expressionManager.getValue(EXPRESSION_MAP[current]) ?? 0;
               if (currentValue > 0.01) {
@@ -173,7 +372,6 @@ const AvatarScene = forwardRef<AvatarSceneHandle, AvatarSceneProps>(
                 currentExpressionRef.current = target;
               }
 
-              // Fade in target expression
               if (target !== 'neutral') {
                 const targetValue =
                   expressionManager.getValue(EXPRESSION_MAP[target]) ?? 0;
@@ -184,7 +382,6 @@ const AvatarScene = forwardRef<AvatarSceneHandle, AvatarSceneProps>(
               }
             }
 
-            // Mouth / lip sync via the 'aa' viseme or mouth open blend shape
             const mouthTarget = mouthValueRef.current;
             try {
               expressionManager.setValue('aa', mouthTarget * 0.7);
@@ -193,7 +390,6 @@ const AvatarScene = forwardRef<AvatarSceneHandle, AvatarSceneProps>(
               // Some models may not have these visemes
             }
 
-            // Idle eye blink
             const blinkCycle = Math.sin(Date.now() * 0.001 * 0.5) > 0.97;
             expressionManager.setValue(
               VRMExpressionPresetName.Blink,
@@ -202,6 +398,24 @@ const AvatarScene = forwardRef<AvatarSceneHandle, AvatarSceneProps>(
           }
 
           vrm.update(delta);
+        }
+
+        // FBX update
+        if (fbxMixerRef.current) {
+          fbxMixerRef.current.update(delta);
+        }
+
+        // FBX jaw-based lip sync
+        if (fbxMouthBoneRef.current) {
+          const mouthTarget = mouthValueRef.current;
+          const bone = fbxMouthBoneRef.current;
+          const openQuat = new THREE.Quaternion().setFromAxisAngle(
+            new THREE.Vector3(1, 0, 0),
+            mouthTarget * 0.3 // ~17 degrees max opening
+          );
+          bone.quaternion
+            .copy(fbxMouthRestQuat.current)
+            .multiply(openQuat);
         }
 
         controls.update();
@@ -225,6 +439,11 @@ const AvatarScene = forwardRef<AvatarSceneHandle, AvatarSceneProps>(
         window.removeEventListener('resize', handleResize);
         cancelAnimationFrame(animFrameRef.current);
         renderer.dispose();
+        fbxMixerRef.current = null;
+        fbxModelRef.current = null;
+        fbxMouthBoneRef.current = null;
+        fbxActionsRef.current.clear();
+        vrmRef.current = null;
         if (container.contains(renderer.domElement)) {
           container.removeChild(renderer.domElement);
         }

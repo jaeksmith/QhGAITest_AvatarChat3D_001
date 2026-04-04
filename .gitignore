@@ -15,6 +15,7 @@ dist-ssr
 # Avatar model files (large binaries - download or add your own)
 public/models/*.vrm
 public/models/*.glb
+public/models/avatar_fbx/
 
 # Claude Code
 .claude
