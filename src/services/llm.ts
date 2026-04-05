@@ -2,45 +2,79 @@ import OpenAI from 'openai';
 import type { ChatMessage, LLMConfig, LLMResponse, Expression } from '../types';
 import { EXPRESSIONS } from '../types';
 
-const EXPRESSION_INSTRUCTION = `
-You are an expressive AI avatar assistant. Along with your text response, you must indicate your current facial expression.
+/**
+ * Build the system instruction dynamically based on available animation tokens.
+ */
+function buildSystemInstruction(
+  availableAnimations: string[],
+  userSystemPrompt?: string
+): string {
+  const animList =
+    availableAnimations.length > 0
+      ? availableAnimations.join(', ')
+      : 'wave, greet, celebrate, dance, confused, think, frustrated, excited, walk, run';
 
-Format your response EXACTLY as:
+  return `${userSystemPrompt || 'You are a friendly AI assistant with a 3D avatar. Be expressive and conversational.'}
+
+You have a 3D avatar body. Along with your text, you control your facial expression and can perform body animations.
+
+FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
 [EXPRESSION: <expression>]
+[ANIM: <animation>, <animation>, ...]
 <your response text>
 
-Available expressions: ${EXPRESSIONS.join(', ')}
+EXPRESSIONS (pick one): ${EXPRESSIONS.join(', ')}
+ANIMATIONS (pick zero or more): ${animList}
 
-Choose the expression that best matches the emotional tone of your response. For example:
-- Greeting or joke → happy
-- Sad news or empathy → sad
-- Frustration or disagreement → angry
-- Interesting new info → surprised
-- Calm explanation → relaxed
-- Default/neutral → neutral
+The [ANIM: ...] line is optional. Include it when an animation would enhance your response. You can list multiple animations separated by commas — they will play in sequence.
 
-Always include the [EXPRESSION: ...] tag at the very start of your response.
-`;
+Examples:
+- User says "hi" → [EXPRESSION: happy]\\n[ANIM: wave]\\nHey there! Great to see you!
+- User tells a joke → [EXPRESSION: happy]\\n[ANIM: celebrate]\\nHaha, that's hilarious!
+- User asks a hard question → [EXPRESSION: relaxed]\\n[ANIM: think]\\nLet me think about that...
+- User says "dance for me" → [EXPRESSION: happy]\\n[ANIM: dance]\\nSure, check this out!
+- Normal conversation → [EXPRESSION: neutral]\\nHere's what I think...
+
+Keep animations relevant and natural. Don't overuse them — sometimes just talking is fine.
+Always include [EXPRESSION: ...] on the first line. [ANIM: ...] is optional on the second line.`;
+}
 
 function parseResponse(raw: string): LLMResponse {
-  const match = raw.match(/\[EXPRESSION:\s*(\w+)\]/i);
-  let expression: Expression = 'neutral';
   let text = raw;
+  let expression: Expression = 'neutral';
+  const animations: string[] = [];
 
-  if (match) {
-    const parsed = match[1].toLowerCase() as Expression;
+  // Parse expression
+  const exprMatch = text.match(/\[EXPRESSION:\s*(\w+)\]/i);
+  if (exprMatch) {
+    const parsed = exprMatch[1].toLowerCase() as Expression;
     if (EXPRESSIONS.includes(parsed)) {
       expression = parsed;
     }
-    text = raw.replace(/\[EXPRESSION:\s*\w+\]\s*/i, '').trim();
+    text = text.replace(/\[EXPRESSION:\s*\w+\]\s*/i, '');
   }
 
-  return { text, expression };
+  // Parse animations
+  const animMatch = text.match(/\[ANIM:\s*([^\]]+)\]/i);
+  if (animMatch) {
+    const tokens = animMatch[1]
+      .split(',')
+      .map((t) => t.trim().toLowerCase())
+      .filter((t) => t.length > 0);
+    animations.push(...tokens);
+    text = text.replace(/\[ANIM:\s*[^\]]+\]\s*/i, '');
+  }
+
+  text = text.trim();
+
+  return { text, expression, animations };
 }
 
 export async function sendChat(
   messages: ChatMessage[],
-  config: LLMConfig
+  config: LLMConfig,
+  availableAnimations: string[] = [],
+  userSystemPrompt?: string
 ): Promise<LLMResponse> {
   const client = new OpenAI({
     apiKey: config.apiKey || 'lm-studio',
@@ -52,7 +86,7 @@ export async function sendChat(
 
   const systemMessage = {
     role: 'system' as const,
-    content: EXPRESSION_INSTRUCTION,
+    content: buildSystemInstruction(availableAnimations, userSystemPrompt),
   };
 
   const formattedMessages = [

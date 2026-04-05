@@ -35,6 +35,13 @@ function loadSettings(): AppSettings {
   return DEFAULT_SETTINGS;
 }
 
+/**
+ * Helper to delay for a given number of ms.
+ */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -44,18 +51,26 @@ export default function App() {
   const [avatarLoaded, setAvatarLoaded] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [currentExpression, setCurrentExpression] = useState<Expression>('neutral');
+  const [currentAnimation, setCurrentAnimation] = useState<string>('');
+  const [availableAnimations, setAvailableAnimations] = useState<string[]>([]);
 
   const avatarRef = useRef<AvatarSceneHandle>(null);
 
   const handleFileDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
-    if (file && (file.name.endsWith('.vrm') || file.name.endsWith('.glb'))) {
+    if (file && (file.name.endsWith('.vrm') || file.name.endsWith('.glb') || file.name.endsWith('.fbx'))) {
       const url = URL.createObjectURL(file);
       setSettings((s) => ({ ...s, avatarPath: url }));
       setAvatarError(null);
       setAvatarLoaded(false);
     }
+  }, []);
+
+  const handleAvatarLoaded = useCallback((anims: string[]) => {
+    setAvatarLoaded(true);
+    setAvailableAnimations(anims);
+    console.log('Avatar loaded. Available animation tokens:', anims);
   }, []);
 
   const handleSend = useCallback(
@@ -72,20 +87,19 @@ export default function App() {
       }
 
       try {
-        // Build messages including system prompt
-        const chatMessages: ChatMessage[] = [
-          ...(settings.systemPrompt
-            ? [{ role: 'system' as const, content: settings.systemPrompt }]
-            : []),
-          ...newMessages,
-        ];
-
-        const response = await sendChat(chatMessages, settings.llm);
+        // Don't pass system prompt in messages - it's now built into the LLM service
+        const response = await sendChat(
+          newMessages,
+          settings.llm,
+          availableAnimations,
+          settings.systemPrompt
+        );
 
         const assistantMessage: ChatMessage = {
           role: 'assistant',
           content: response.text,
           expression: response.expression,
+          animations: response.animations,
         };
 
         setMessages((prev) => [...prev, assistantMessage]);
@@ -95,7 +109,20 @@ export default function App() {
         setCurrentExpression(response.expression);
         avatarRef.current?.setExpression(response.expression);
 
-        // Speak the response with lip sync
+        // Play any animations before speaking
+        if (response.animations.length > 0) {
+          for (const animToken of response.animations) {
+            const played = avatarRef.current?.playAnimation(animToken);
+            if (played) {
+              setCurrentAnimation(animToken);
+              // Wait a bit for the animation to play before speaking
+              await delay(1500);
+            }
+          }
+        }
+
+        // Start talking animation and speak
+        avatarRef.current?.startTalking();
         setIsSpeaking(true);
         await speak(
           response.text,
@@ -109,11 +136,13 @@ export default function App() {
           }
         );
         setIsSpeaking(false);
+        avatarRef.current?.stopTalking();
 
         // Return to neutral after speaking
         setTimeout(() => {
           avatarRef.current?.setExpression('neutral');
           setCurrentExpression('neutral');
+          setCurrentAnimation('');
         }, 1000);
       } catch (error) {
         console.error('Chat error:', error);
@@ -129,7 +158,7 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [messages, settings]
+    [messages, settings, availableAnimations]
   );
 
   return (
@@ -139,6 +168,9 @@ export default function App() {
         <h1 style={styles.title}>AI Avatar Chat</h1>
         <div style={styles.headerRight}>
           <span style={styles.expressionBadge}>{currentExpression}</span>
+          {currentAnimation && (
+            <span style={styles.animBadge}>{currentAnimation}</span>
+          )}
           <button
             style={styles.settingsBtn}
             onClick={() => setShowSettings(true)}
@@ -160,7 +192,7 @@ export default function App() {
             <div style={styles.errorOverlay}>
               <p style={styles.errorText}>{avatarError}</p>
               <p style={styles.errorHint}>
-                Place a .vrm file in <code>public/models/avatar.vrm</code> or
+                Place a .vrm or .fbx file in <code>public/models/</code> or
                 update the path in Settings.
               </p>
               <button
@@ -174,7 +206,7 @@ export default function App() {
             <AvatarScene
               ref={avatarRef}
               avatarUrl={settings.avatarPath}
-              onLoaded={() => setAvatarLoaded(true)}
+              onLoaded={handleAvatarLoaded}
               onError={(err) => setAvatarError(err)}
             />
           )}
@@ -245,6 +277,13 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#d4b8ff',
     fontSize: '12px',
     textTransform: 'capitalize' as const,
+  },
+  animBadge: {
+    padding: '4px 12px',
+    borderRadius: '12px',
+    background: '#0f3460',
+    color: '#7bb8de',
+    fontSize: '12px',
   },
   settingsBtn: {
     padding: '8px 16px',

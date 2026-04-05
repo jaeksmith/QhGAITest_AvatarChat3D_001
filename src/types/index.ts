@@ -1,7 +1,13 @@
+export interface AnimationCue {
+  token: string;
+  atIndex: number; // character index in the text where this animation should trigger
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   expression?: string;
+  animations?: string[];
 }
 
 export interface LLMConfig {
@@ -33,4 +39,5 @@ export const EXPRESSIONS: Expression[] = ['neutral', 'happy', 'sad', 'angry', 's
 export interface LLMResponse {
   text: string;
   expression: Expression;
+  animations: string[]; // animation tokens to play in sequence
 }

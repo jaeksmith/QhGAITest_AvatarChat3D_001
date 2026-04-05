@@ -1,0 +1,33 @@
+{
+  "_comment": "Maps abstract action tokens (used by LLM) to actual animation clip names in the FBX model. Edit this file to customize.",
+  "_format": "Each entry: token -> { clip: 'AnimationClipName', loop: true/false, category: 'idle'|'action'|'talk'|'emote' }",
+
+  "idle": { "clip": "Idle_3", "loop": true, "category": "idle" },
+  "idle_alt": { "clip": "Idle_6", "loop": true, "category": "idle" },
+  "idle_short": { "clip": "Idle_7", "loop": true, "category": "idle" },
+
+  "talk": { "clip": "Talk_with_Hands_Open", "loop": true, "category": "talk" },
+  "talk_right": { "clip": "Talk_with_Right_Hand_Open", "loop": true, "category": "talk" },
+  "talk_left": { "clip": "Talk_with_Left_Hand_Raised", "loop": true, "category": "talk" },
+  "explain": { "clip": "Talk_with_Hands_Open", "loop": true, "category": "talk" },
+
+  "wave": { "clip": "Wave_for_Help_4", "loop": false, "category": "emote" },
+  "greet": { "clip": "Wave_for_Help_4", "loop": false, "category": "emote" },
+  "celebrate": { "clip": "happy_jump_m", "loop": false, "category": "emote" },
+  "jump": { "clip": "happy_jump_m", "loop": false, "category": "emote" },
+  "dance": { "clip": "FunnyDancing_01", "loop": false, "category": "emote" },
+  "confused": { "clip": "Confused_Scratch", "loop": false, "category": "emote" },
+  "think": { "clip": "Confused_Scratch", "loop": false, "category": "emote" },
+  "headache": { "clip": "Headache_Relief", "loop": false, "category": "emote" },
+  "frustrated": { "clip": "Headache_Relief", "loop": false, "category": "emote" },
+  "wake_up": { "clip": "Wake_Up_and_Look_Up", "loop": false, "category": "emote" },
+  "surprise": { "clip": "Wake_Up_and_Look_Up", "loop": false, "category": "emote" },
+  "flip": { "clip": "Backflip", "loop": false, "category": "emote" },
+  "excited": { "clip": "Backflip", "loop": false, "category": "emote" },
+
+  "walk": { "clip": "Walking", "loop": true, "category": "action" },
+  "run": { "clip": "Running", "loop": true, "category": "action" },
+  "die": { "clip": "Fall_Dead_from_Abdominal_Injury", "loop": false, "category": "action" },
+  "fall": { "clip": "Fall_Dead_from_Abdominal_Injury", "loop": false, "category": "action" },
+  "pose": { "clip": "Character_output.fbx", "loop": false, "category": "action" }
+}

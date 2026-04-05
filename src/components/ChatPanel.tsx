@@ -73,9 +73,14 @@ export default function ChatPanel({ messages, onSend, isLoading, isSpeaking }: C
               {msg.role === 'user' ? 'You' : 'Avatar'}
             </div>
             <div style={styles.messageContent}>{msg.content}</div>
-            {msg.expression && (
-              <div style={styles.expressionTag}>{msg.expression}</div>
-            )}
+            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+              {msg.expression && (
+                <span style={styles.expressionTag}>{msg.expression}</span>
+              )}
+              {msg.animations?.map((anim, j) => (
+                <span key={j} style={styles.animTag}>{anim}</span>
+              ))}
+            </div>
           </div>
         ))}
         {isLoading && (
@@ -183,6 +188,15 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '12px',
     background: '#533483',
     color: '#d4b8ff',
+  },
+  animTag: {
+    display: 'inline-block',
+    marginTop: '6px',
+    padding: '2px 8px',
+    fontSize: '11px',
+    borderRadius: '12px',
+    background: '#0f3460',
+    color: '#7bb8de',
   },
   typing: {
     color: '#888',
