@@ -239,28 +239,43 @@ const AvatarScene = forwardRef<AvatarSceneHandle, AvatarSceneProps>(
               controller.registerClip(clip.name, clip);
             });
 
-            // Load separate animations FBX
-            const animUrl = avatarUrl.replace(
-              '_Character_output.fbx',
-              '_Meshy_AI_Meshy_Merged_Animations.fbx'
-            );
-            if (animUrl !== avatarUrl) {
-              try {
-                const animFbx = await new Promise<THREE.Group>((resolve, reject) => {
-                  const loader = new FBXLoader();
-                  loader.load(animUrl, resolve, undefined, reject);
-                });
-                animFbx.animations.forEach((clip) => {
-                  controller.registerClip(clip.name, clip);
-                });
-                console.log(`Loaded ${animFbx.animations.length} animations from separate file`);
-              } catch (err) {
-                console.log('No separate animations file (optional):', err);
-              }
+            // Load animation map first to know which clips to load
+            const animMap = await loadAnimationMap();
+
+            // Derive base prefix for animation files
+            // e.g. "Meshy_AI_Hot_young_muscular_bi_biped" from the character FBX name
+            const charFileName = avatarUrl.split('/').pop() || '';
+            const basePrefix = charFileName.replace('_Character_output.fbx', '');
+
+            // Collect unique clip names from the animation map
+            const clipNames = new Set<string>();
+            for (const entry of Object.values(animMap)) {
+              clipNames.add(entry.clip);
             }
 
-            // Load animation map and start idle
-            const animMap = await loadAnimationMap();
+            // Load each animation from its own FBX file
+            const animLoader = new FBXLoader();
+            const loadPromises = Array.from(clipNames).map(async (clipName) => {
+              // Build the expected filename: {basePrefix}_Animation_{clipName}_withSkin.fbx
+              const animFileName = `${basePrefix}_Animation_${clipName}_withSkin.fbx`;
+              const animUrl = `${basePath}/${animFileName}`;
+
+              try {
+                const animFbx = await new Promise<THREE.Group>((resolve, reject) => {
+                  animLoader.load(animUrl, resolve, undefined, reject);
+                });
+                if (animFbx.animations.length > 0) {
+                  // Use the clip name from the map as the registered name
+                  controller.registerClip(clipName, animFbx.animations[0]);
+                  console.log(`Loaded animation: ${clipName} (${animFbx.animations[0].duration.toFixed(1)}s)`);
+                }
+              } catch {
+                console.warn(`Could not load animation file: ${animFileName}`);
+              }
+            });
+
+            await Promise.all(loadPromises);
+
             controller.setAnimationMap(animMap);
             controller.startIdle();
 
